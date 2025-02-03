@@ -1,7 +1,7 @@
-// Import required modules
+const { Worker } = require('worker_threads');
 const crypto = require('crypto');
+const P2P = require('./p2p'); 
 
-// Blockchain Class
 class Block {
     constructor(index, previousHash, timestamp, data, difficulty, nonce) {
         this.index = index;
@@ -16,7 +16,7 @@ class Block {
     calculateHash() {
         return crypto
             .createHash('sha256')
-            .update(this.index + this.previousHash + this.timestamp + JSON.stringify(this.data) + this.difficulty + this.nonce)
+            .update(this.index + this.previousHash + JSON.stringify(this.data) + this.timestamp + this.difficulty + this.nonce)
             .digest('hex');
     }
 }
@@ -24,9 +24,10 @@ class Block {
 class Blockchain {
     constructor() {
         this.chain = [this.createGenesisBlock()];
-        this.difficulty = 5; // Initial difficulty
-        this.blockGenerationInterval = 10; // seconds
-        this.adjustmentInterval = 10; // blocks
+        this.difficulty = 1; // zacetni difficulty
+        this.blockGenerationInterval =  2; // sec
+        this.adjustmentInterval = 2; // blocks
+        this.isMining = false;
     }
 
     createGenesisBlock() {
@@ -38,7 +39,7 @@ class Blockchain {
     }
 
     addBlock(newBlock) {
-        if (this.isValidNewBlock(newBlock, this.getLatestBlock())) {
+       if (this.isValidNewBlock(newBlock, this.getLatestBlock())) {
             this.chain.push(newBlock);
         }
     }
@@ -46,61 +47,75 @@ class Blockchain {
     isValidNewBlock(newBlock, previousBlock) {
         if (newBlock.index !== previousBlock.index + 1) return false;
         if (newBlock.previousHash !== previousBlock.hash) return false;
-        if (newBlock.hash !== newBlock.calculateHash()) return false;
+        if (newBlock.timestamp > Date.now() + 60 * 1000 ) return false; //validacija casovne znacke za trenutni cas(60sek)
+        if (newBlock.timestamp < previousBlock.timestamp - 60 * 1000) return false; //validacija casovne znacke glede na prejsnji blok
         return true;
     }
 
-    isChainValid(chain) {
+    calculateComulativeDifficulty(chain) {
+        let comulativeDifficulty = 0;
+    
         for (let i = 1; i < chain.length; i++) {
             if (!this.isValidNewBlock(chain[i], chain[i - 1])) {
-                return false;
+                return "error chain not valid"; 
             }
+            comulativeDifficulty += Math.pow(2, chain[i].difficulty);
         }
-        return true;
+        return comulativeDifficulty;
     }
+    
+
 
     calculateDifficulty() {
         const latestBlock = this.getLatestBlock();
-        if (this.chain.length % this.adjustmentInterval === 0 && this.chain.length !== 0) {
-            const expectedTime = this.blockGenerationInterval * this.adjustmentInterval;
-            const actualTime = latestBlock.timestamp - this.chain[this.chain.length - this.adjustmentInterval].timestamp;
-            if (actualTime < expectedTime / 2) return this.difficulty + 1;
-            else if (actualTime > expectedTime * 2) return this.difficulty - 1;
-        }
-        return this.difficulty;
-    }
 
+        if (this.chain.length < this.adjustmentInterval) {
+            return this.difficulty; 
+        } 
+        else {
+            const timeTaken = latestBlock.timestamp - this.chain[this.chain.length - this.adjustmentInterval].timestamp; 
+            console.log("ACTUAL TIME",timeTaken);
+            const timeExpected = this.blockGenerationInterval * this.adjustmentInterval * 100;
+            console.log("EXPECTED TIME",timeExpected);
+
+            if (timeTaken < timeExpected / 2) {
+                console.log("DIFFICULTY INCREMENTED");
+                return this.difficulty += 1;
+            }
+            else if (timeTaken > timeExpected * 2 && this.difficulty > 0){
+                console.log("DIFFICULTY DECREMENTED");
+                return this.difficulty -= 1;
+            } else {
+                console.log("DIFFICULTY STAYED THE SAME");
+                return this.difficulty; 
+            }
+        }
+    }
 
     mineBlock(data) {
-        const previousBlock = this.getLatestBlock();
-        const index = previousBlock.index + 1;
-        const timestamp = Date.now();
-        const difficulty = this.calculateDifficulty();
-        let nonce = 0;
-        let hash;
-
-        do {
-            nonce++;
-            hash = crypto
-                .createHash('sha256')
-                .update(index + previousBlock.hash + timestamp + JSON.stringify(data) + difficulty + nonce)
-                .digest('hex');
-        } while (hash.substring(0, difficulty) !== Array(difficulty + 1).join("0"));
-
-        return new Block(index, previousBlock.hash, timestamp, data, difficulty, nonce);
+        return new Promise((resolve, reject) => {
+            const previousBlock = this.getLatestBlock();
+            const difficulty = this.calculateDifficulty();
+    
+            this.isMining = true;
+            const worker = new Worker('./mineWorker.js');
+            worker.postMessage({ previousBlock, data, difficulty });
+    
+            worker.on('message', (newBlock) => {
+                console.log('Block mined:', newBlock);
+                resolve(newBlock); // Resolve promise z novim blockom
+                worker.terminate();
+                this.isMining = false;
+            });
+    
+            worker.on('error', (err) => {
+                console.error('Worker error:', err);
+                reject(err); // Reject promise ce je napaka
+                this.isMining = false;
+            });
+        });
     }
+    
 }
 
 module.exports = Blockchain;
-
-
-
-
-
-
-
-
-
-
-
-
